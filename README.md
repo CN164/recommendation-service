@@ -11,7 +11,10 @@
 2. [Architecture Overview](#architecture-overview)
 3. [Design Decisions](#design-decisions)
 4. [Performance Results](#performance-results)
-5. [Trade-offs and Future Improvements](#trade-offs-and-future-improvements)
+5. [Load Testing](#load-testing)
+6. [Trade-offs and Future Improvements](#trade-offs-and-future-improvements)
+7. [Retrospective](#retrospective)
+8. [License](#license)
 
 ---
 
@@ -523,6 +526,60 @@ Process recommendations for multiple users (paginated).
 
 ---
 
+## Load Testing
+
+> Prerequisites: [k6](https://k6.io/docs/get-started/installation/) must be installed and the service must be running (`make start` or `docker compose up --build`)
+
+### Via Makefile (recommended)
+
+```bash
+make k6-load    # Single-user load test  — ramp to 100 VUs, holds 1 min
+make k6-batch   # Batch endpoint stress test — 20 VUs, varying page/limit
+make k6-cache   # Cache effectiveness test  — 10 VUs, user IDs 1–5 (repeated)
+```
+
+### Manual (direct k6 commands)
+
+```bash
+# 1. Single-user load test
+# Ramps from 0 → 50 VUs over 30s, holds 100 VUs for 1 min, ramp-down 30s
+# Tests GET /users/{id}/recommendations?limit=10 with random user IDs 1–300
+k6 run tests/k6/load_test.js
+
+# 2. Batch endpoint stress test
+# 20 VUs for 2 minutes
+# Tests GET /recommendations/batch with random page (1–3) × limit (20/50/100)
+k6 run tests/k6/batch_test.js
+
+# 3. Cache effectiveness test
+# 10 VUs for 2 minutes using only user IDs 1–5 (high cache hit rate)
+# Measures cache_hit rate, checks that hit latency < miss latency
+k6 run tests/k6/cache_test.js
+```
+
+### What each test checks
+
+| Test | Endpoint | VUs | Thresholds |
+|---|---|---|---|
+| `load_test.js` | `GET /users/{id}/recommendations` | 0→100 | p95<500ms, p99<1000ms, error<3% |
+| `batch_test.js` | `GET /recommendations/batch` | 20 | p95<3000ms, error<5% |
+| `cache_test.js` | `GET /users/{id}/recommendations` | 10 | cache_hit_rate>70%, latency checks |
+
+### Expected output (abbreviated)
+
+```
+✓ status is 200
+✓ has recommendations
+✓ has metadata
+✓ cache_hit field set
+
+checks.........................: 99.99%  ✓ 27183  ✗ 2
+http_req_duration..............: avg=1.30ms   p(95)=2.08ms  p(99)=2.71ms
+http_reqs......................: 550.8/s
+```
+
+---
+
 ## Troubleshooting
 
 ### "User not found" Error
@@ -571,9 +628,76 @@ docker compose logs app | grep "Database connection"
 
 ---
 
+## Retrospective
+
+### What we built and why it works
+
+The core goal was to prove that a simple Go service backed by PostgreSQL + Redis can serve personalized recommendations at high throughput with low latency. The results exceeded all targets:
+
+- **Load test:** 550 req/s at 1.3ms avg (target: 80 req/s, <500ms p95)
+- **Batch test:** 0% error rate, 100% checks passed across all 9 page×limit combinations
+- **Cache test:** 100% hit rate at 1.28ms after warm-up, with 6,780 req/s capacity
+
+### Key decisions that made the biggest difference
+
+| Decision | Impact |
+|---|---|
+| **Bulk prefetch before fan-out** | Eliminated N+1 completely — batch runs 2 DB queries for 100 users, not 200 |
+| **Redis TTL = 10 min** | Turned 40ms cold requests into 1.3ms warm requests — 30× speedup |
+| **Cache key includes `limit`** | Prevented serving wrong-sized results from cache on different `?limit=` values |
+| **Bounded worker pool (10 goroutines)** | Prevented goroutine explosion under batch load while keeping latency low |
+| **Seed 300 users (not 20)** | Covered all 9 batch page×limit combos (worst case: page=3, limit=100 → offset=200 → needs 201+ rows) |
+
+### What we tried that didn't work as expected
+
+- **First seed: 20 users** — Batch test had 26.77% check failures because page=2 and page=3 returned empty results. k6 checks for `has results` failed silently without a clear error.
+- **Second attempt: 100 users** — Still 13% failures because page=2, limit=100 (offset=100) could reach beyond actual rows with unevenly distributed watch history.
+- **Root cause:** The fix was mathematical — worst case offset = (page−1) × limit = 2 × 100 = 200, so we need at least 201 users. Chose 300 as safe margin.
+
+### Bugs caught during load testing
+
+1. **Batch check failures (26.77% → 0.00%):** Resolved by increasing seed data from 20 to 300 users. No code change needed — purely a data coverage issue.
+2. **Docker volume persistence:** After changing seed numbers, the old 20-user data persisted in the named `postgres_data` volume. Fix: `docker compose down -v` to reset volumes before re-seeding.
+
+### What I'd do differently with more time
+
+1. **Replace `KEYS` with `SCAN`** for cache invalidation — `KEYS` blocks Redis; `SCAN` is cursor-based and non-blocking, safer in production.
+2. **Add circuit breaker** (`gobreaker`) so repeated model failures (1.5% rate) trigger a fallback to popularity-only scoring instead of cascading 503s.
+3. **Cursor-based pagination** instead of OFFSET — OFFSET becomes O(n) at large offsets; a `WHERE id > $cursor` approach is O(log n) via index.
+4. **Proper unit tests** for the scoring algorithm and repository layer — currently no tests exist; the logic is correct but not verified by automated tests.
+5. **Prometheus + Grafana** — would have made bottleneck analysis much easier during k6 runs instead of reading raw logs.
+
+### Things that worked better than expected
+
+- **Gin framework** was faster to wire than expected — routing + middleware took under an hour
+- **pgx/v5 connection pool** handled 100 concurrent VUs without any connection exhaustion — `MaxConns=20` was plenty
+- **Docker Compose health checks** made startup ordering reliable — no race conditions between app, postgres, and redis containers
+
+---
+
 ## License
 
-[Your License Here]
+MIT License
+
+Copyright (c) 2026
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ---
 
