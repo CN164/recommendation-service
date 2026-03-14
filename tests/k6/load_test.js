@@ -14,7 +14,7 @@ export let options = {
 };
 
 export default function () {
-  const userId = Math.floor(Math.random() * 20) + 1;
+  const userId = Math.floor(Math.random() * 300) + 1;
   const res = http.get(
     `http://localhost:8080/users/${userId}/recommendations?limit=10`,
     { timeout: '5s' }

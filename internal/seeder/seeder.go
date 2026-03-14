@@ -36,13 +36,13 @@ func Run(ctx context.Context, db *pgxpool.Pool) error {
 	countries := []string{"US", "GB", "CA", "AU", "DE", "TH", "JP"}
 	subscriptions := []string{"free", "basic", "premium"}
 	weights := []float64{0.5, 0.3, 0.2}
-	userIDs, err := seedUsers(ctx, db, rng, countries, subscriptions, weights, 20)
+	userIDs, err := seedUsers(ctx, db, rng, countries, subscriptions, weights, 300)
 	if err != nil {
 		return fmt.Errorf("failed to seed users: %w", err)
 	}
 	log.Printf("✓ Seeded %d users\n", len(userIDs))
 
-	watchCount, err := seedWatchHistory(ctx, db, rng, userIDs, contentIDs, 200)
+	watchCount, err := seedWatchHistory(ctx, db, rng, userIDs, contentIDs, 3000)
 	if err != nil {
 		return fmt.Errorf("failed to seed watch history: %w", err)
 	}

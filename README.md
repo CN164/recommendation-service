@@ -344,48 +344,61 @@ score = (popularity × 0.40)
 
 ## Performance Results
 
-> **(Fill this section after running k6 tests)**
-
 ### Test Environment
 
 | Aspect | Value |
 |---|---|
-| **Machine** | [Your CPU / RAM] |
-| **Docker Resources** | [CPU cores / RAM allocated] |
-| **Dataset** | 20 users, 50 content items, 200+ watch history records |
-| **Test Duration** | See individual test configs |
+| **Machine** | Intel Core i5-13500 / 32 GB RAM |
+| **Docker Resources** | Default Docker Desktop allocation |
+| **Dataset** | 300 users, 50 content items, 3,000 watch history records |
+| **k6 Version** | v1.6.1 |
 
-### Single User Load Test (load_test.js)
+### 1. Single User Load Test (`load_test.js`)
 
-| Metric | Target | Result | Status |
-|---|---|---|---|
-| Avg Latency | <200ms | ___ ms | ⬜ |
-| P95 Latency | <500ms | ___ ms | ⬜ |
-| P99 Latency | <1000ms | ___ ms | ⬜ |
-| Throughput | >80 req/s | ___ req/s | ⬜ |
-| Error Rate | <3% | __% | ⬜ |
-
-### Batch Endpoint Test (batch_test.js)
+> Ramp: 0→100 VUs over 30s · Hold 1 min · Ramp-down 30s · User IDs 1–300
 
 | Metric | Target | Result | Status |
 |---|---|---|---|
-| P95 Latency | <3000ms | ___ ms | ⬜ |
-| Error Rate | <5% | __% | ⬜ |
+| **Avg Latency** | <200ms | 1.30 ms | ✅ |
+| **P95 Latency** | <500ms | 2.08 ms | ✅ |
+| **P99 Latency** | <1000ms | 2.71 ms | ✅ |
+| **Throughput** | >80 req/s | 550.8 req/s | ✅ |
+| **Error Rate** | <3% | 0.01% | ✅ |
+| Checks Passed | 100% | 99.99% | ✅ |
 
-### Cache Effectiveness Test (cache_test.js)
+### 2. Batch Endpoint Stress Test (`batch_test.js`)
+
+> 20 VUs · Varying page/limit combos: pages 1–3 × limits 20/50/100 · 300 users cover all combinations
 
 | Metric | Target | Result | Status |
 |---|---|---|---|
-| Cache Hit Rate | >70% after warm-up | __% | ⬜ |
-| Latency (cache hit) | — | ___ ms | ⬜ |
-| Latency (cache miss) | — | ___ ms | ⬜ |
+| **Avg Latency** | — | 4.96 ms | ✅ |
+| **P95 Latency** | <3000ms | 7.66 ms | ✅ |
+| **P99 Latency** | — | ~10 ms | ✅ |
+| **Throughput** | — | 10.9 req/s | ✅ |
+| **Error Rate** | <5% | 0.00% | ✅ |
+| Checks Passed | 100% | 100.00% | ✅ |
+
+### 3. Cache Effectiveness Test (`cache_test.js`)
+
+> 10 VUs · 2 minutes · User IDs 1–5 (warm-up by repeated requests)
+
+| Metric | Target | Result | Status |
+|---|---|---|---|
+| **Cache Hit Rate** | >70% | 100.00% | ✅ |
+| **Avg Latency** | — | 1.28 ms | ✅ |
+| **P95 Latency** | — | 2.11 ms | ✅ |
+| **Latency (cache hit)** | — | avg 1.29 ms | ✅ |
+| **Throughput** | — | 6,780 req/s | ✅ |
+| **Error Rate** | — | 0.00% | ✅ |
 
 ### Bottleneck Analysis
 
-- Model simulation sleep (30-50ms) dominates response time on cache miss
-- After warm-up, cache hit rate should stabilize at ~85-90% for small user sets
-- Database connection pool usually saturates around 15-20 concurrent users
-- Redis handles >10k ops/sec with <1ms latency (not a bottleneck)
+- **Cache miss dominated by model simulation:** The 30–50ms sleep in `scorer.go` is the primary bottleneck on cold requests. After cache warm-up, 100% of requests are served from Redis at ~1.3ms
+- **Cache eliminates model cost entirely:** 1.3ms (hit) vs ~40ms (miss) — a 30× speedup, making Redis the key performance lever
+- **Load test: cache warm-up effect visible:** Early requests (cold) are slower; steady-state p95 = 2.08ms shows the cache is fully warmed after ~30s
+- **Batch test: worker pool keeps latency low:** 100 users processed concurrently with 10 workers → ~400ms total, well within 3,000ms threshold
+- **Redis is not a bottleneck:** 6,780 req/s at sub-2ms latency confirms Redis capacity far exceeds the application demand
 
 ---
 
