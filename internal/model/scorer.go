@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yourname/recommendation-service-v2/internal/domain"
+	"github.com/CN164/recommendation-service/internal/domain"
 )
 
 // ErrModelUnavailable indicates the model is temporarily unavailable (503)

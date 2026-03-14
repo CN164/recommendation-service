@@ -1,4 +1,4 @@
-module github.com/yourname/recommendation-service-v2
+module github.com/CN164/recommendation-service
 
 go 1.26
 

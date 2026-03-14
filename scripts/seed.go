@@ -8,8 +8,8 @@ import (
 	"log"
 	"os"
 
+	"github.com/CN164/recommendation-service/internal/seeder"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/yourname/recommendation-service-v2/internal/seeder"
 )
 
 func main() {

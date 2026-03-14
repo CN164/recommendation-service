@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/CN164/recommendation-service/internal/domain"
 	"github.com/redis/go-redis/v9"
-	"github.com/yourname/recommendation-service-v2/internal/domain"
 )
 
 const (

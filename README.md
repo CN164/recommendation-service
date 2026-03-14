@@ -1,4 +1,4 @@
-# Recommendation Service v2
+# Recommendation Service
 
 > **Stack:** Go 1.26+ · PostgreSQL 15 · Redis 7 · Docker · Gin Web Framework
 > **Build Time:** Follow the setup instructions below
@@ -355,6 +355,8 @@ score = (popularity × 0.40)
 | **Docker Resources** | Default Docker Desktop allocation |
 | **Dataset** | 300 users, 50 content items, 3,000 watch history records |
 | **k6 Version** | v1.6.1 |
+
+> **Note:** Results are highly dependent on the host machine's hardware specifications. Machines with different CPU/RAM configurations will produce different throughput and latency numbers, especially when running Docker Desktop which shares resources with the host OS.
 
 ### 1. Single User Load Test (`load_test.js`)
 

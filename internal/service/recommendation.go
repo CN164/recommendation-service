@@ -6,11 +6,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/CN164/recommendation-service/internal/cache"
+	"github.com/CN164/recommendation-service/internal/domain"
+	"github.com/CN164/recommendation-service/internal/model"
+	"github.com/CN164/recommendation-service/internal/repository"
 	"github.com/jackc/pgx/v5"
-	"github.com/yourname/recommendation-service-v2/internal/cache"
-	"github.com/yourname/recommendation-service-v2/internal/domain"
-	"github.com/yourname/recommendation-service-v2/internal/model"
-	"github.com/yourname/recommendation-service-v2/internal/repository"
 )
 
 const (

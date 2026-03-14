@@ -11,17 +11,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/CN164/recommendation-service/internal/cache"
+	"github.com/CN164/recommendation-service/internal/handler"
+	"github.com/CN164/recommendation-service/internal/model"
+	"github.com/CN164/recommendation-service/internal/repository"
+	"github.com/CN164/recommendation-service/internal/seeder"
+	"github.com/CN164/recommendation-service/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/yourname/recommendation-service-v2/internal/cache"
-	"github.com/yourname/recommendation-service-v2/internal/handler"
-	"github.com/yourname/recommendation-service-v2/internal/model"
-	"github.com/yourname/recommendation-service-v2/internal/repository"
-	"github.com/yourname/recommendation-service-v2/internal/seeder"
-	"github.com/yourname/recommendation-service-v2/internal/service"
 )
 
 func main() {

@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/CN164/recommendation-service/internal/domain"
+	"github.com/CN164/recommendation-service/internal/service"
 	"github.com/gin-gonic/gin"
-	"github.com/yourname/recommendation-service-v2/internal/domain"
-	"github.com/yourname/recommendation-service-v2/internal/service"
 )
 
 // Handler handles HTTP requests
