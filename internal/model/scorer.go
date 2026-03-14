@@ -1,7 +1,7 @@
 package model
 
 import (
-	"fmt"
+	"errors"
 	"math/rand"
 	"sort"
 	"sync"
@@ -11,7 +11,7 @@ import (
 )
 
 // ErrModelUnavailable indicates the model is temporarily unavailable (503)
-var ErrModelUnavailable = fmt.Errorf("model unavailable")
+var ErrModelUnavailable = errors.New("model unavailable")
 
 // Scorer is the recommendation model/scorer
 type Scorer struct {

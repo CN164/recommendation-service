@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -10,15 +12,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Recommender is the interface the Handler depends on.
+// Defined here (consumer package) so the service package has no dependency on handler.
+type Recommender interface {
+	GetRecommendations(ctx context.Context, userID int64, limit int32) (*domain.UserRecommendationResponse, error)
+	BatchRecommendations(ctx context.Context, page, limit int32) (*domain.BatchRecommendationResponse, error)
+}
+
 // Handler handles HTTP requests
 type Handler struct {
-	service *service.RecommendationService
+	service Recommender
 }
 
 // NewHandler creates a new handler
-func NewHandler(service *service.RecommendationService) *Handler {
+func NewHandler(svc Recommender) *Handler {
 	return &Handler{
-		service: service,
+		service: svc,
 	}
 }
 
@@ -56,13 +65,13 @@ func (h *Handler) GetUserRecommendations(c *gin.Context) {
 	// Get recommendations
 	response, err := h.service.GetRecommendations(c.Request.Context(), userID, int32(limit))
 	if err != nil {
-		switch err.Error() {
-		case "user_not_found":
+		switch {
+		case errors.Is(err, service.ErrUserNotFound):
 			c.JSON(http.StatusNotFound, domain.ErrorResponse{
 				Error:   "user_not_found",
 				Message: "User with the specified ID does not exist",
 			})
-		case "model_unavailable":
+		case errors.Is(err, service.ErrModelUnavailable):
 			c.JSON(http.StatusServiceUnavailable, domain.ErrorResponse{
 				Error:   "model_unavailable",
 				Message: "Recommendation model is temporarily unavailable",

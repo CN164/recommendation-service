@@ -3,7 +3,9 @@ package cache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/CN164/recommendation-service/internal/domain"
@@ -24,7 +26,7 @@ type Cache struct {
 func NewCache(redisURL string) (*Cache, error) {
 	opt, err := redis.ParseURL(redisURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse redis URL: %w", err)
 	}
 
 	client := redis.NewClient(opt)
@@ -33,7 +35,7 @@ func NewCache(redisURL string) (*Cache, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ping redis: %w", err)
 	}
 
 	return &Cache{
@@ -52,10 +54,10 @@ func (c *Cache) Get(ctx context.Context, userID int64, limit int32) ([]domain.Re
 	key := BuildKey(userID, limit)
 	val, err := c.client.Get(ctx, key).Result()
 	if err != nil {
-		if err == redis.Nil {
+		if errors.Is(err, redis.Nil) {
 			return nil, nil // cache miss, not an error
 		}
-		// Log but don't fail on Redis error
+		log.Printf("cache get error for key %s: %v", key, err)
 		return nil, nil
 	}
 
@@ -75,15 +77,21 @@ func (c *Cache) Set(ctx context.Context, userID int64, limit int32, recommendati
 		return err
 	}
 
-	return c.client.Set(ctx, key, string(data), c.ttl).Err()
+	return c.client.Set(ctx, key, data, c.ttl).Err()
 }
 
-// InvalidateUser removes all cached recommendations for a user (all limit variants)
+// InvalidateUser removes all cached recommendations for a user (all limit variants).
+// Uses SCAN instead of KEYS to avoid blocking Redis on large keyspaces.
 func (c *Cache) InvalidateUser(ctx context.Context, userID int64) error {
 	pattern := fmt.Sprintf("rec:user:%d:limit:*", userID)
-	keys, err := c.client.Keys(ctx, pattern).Result()
-	if err != nil {
-		// Log but don't fail
+
+	var keys []string
+	iter := c.client.Scan(ctx, 0, pattern, 0).Iterator()
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		log.Printf("cache invalidate scan error for user %d: %v", userID, err)
 		return nil
 	}
 

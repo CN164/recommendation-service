@@ -2,19 +2,50 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
-	"github.com/CN164/recommendation-service/internal/cache"
 	"github.com/CN164/recommendation-service/internal/domain"
 	"github.com/CN164/recommendation-service/internal/model"
-	"github.com/CN164/recommendation-service/internal/repository"
 	"github.com/jackc/pgx/v5"
 )
 
+// Sentinel errors returned to callers.
+var (
+	ErrUserNotFound     = errors.New("user not found")
+	ErrModelUnavailable = errors.New("recommendation model unavailable")
+)
+
+// Dependency interfaces — defined in the consumer package so implementations
+// can live in any package without creating import cycles.
+type userRepo interface {
+	GetUserByID(ctx context.Context, userID int64) (*domain.User, error)
+	GetUsersByIDs(ctx context.Context, userIDs []int64) (map[int64]*domain.User, error)
+	GetUsersPaginated(ctx context.Context, page, limit int32) ([]int64, int64, error)
+}
+
+type contentRepo interface {
+	GetWatchHistory(ctx context.Context, userID int64) ([]domain.WatchHistory, error)
+	GetWatchHistoryBulk(ctx context.Context, userIDs []int64) (map[int64][]domain.WatchHistory, error)
+	GetCandidateContent(ctx context.Context, userID int64, limit int32) ([]domain.Content, error)
+	GetAllContent(ctx context.Context, limit int32) ([]domain.Content, error)
+}
+
+type recommendationCache interface {
+	Get(ctx context.Context, userID int64, limit int32) ([]domain.Recommendation, error)
+	Set(ctx context.Context, userID int64, limit int32, recommendations []domain.Recommendation) error
+}
+
+type scorer interface {
+	Score(candidates []domain.Content, watchHistory []domain.WatchHistory) ([]domain.Content, error)
+}
+
 const (
 	workerPoolSize      = 10
+	batchDefaultLimit   = 10
 	batchPerUserTimeout = 3 * time.Second
 	dbTimeout           = 5 * time.Second
 	redisTimeout        = 1 * time.Second
@@ -22,18 +53,18 @@ const (
 
 // RecommendationService handles business logic for recommendations
 type RecommendationService struct {
-	userRepo    *repository.UserRepository
-	contentRepo *repository.ContentRepository
-	cache       *cache.Cache
-	scorer      *model.Scorer
+	userRepo    userRepo
+	contentRepo contentRepo
+	cache       recommendationCache
+	scorer      scorer
 }
 
 // NewRecommendationService creates a new recommendation service
 func NewRecommendationService(
-	userRepo *repository.UserRepository,
-	contentRepo *repository.ContentRepository,
-	cache *cache.Cache,
-	scorer *model.Scorer,
+	userRepo userRepo,
+	contentRepo contentRepo,
+	cache recommendationCache,
+	scorer scorer,
 ) *RecommendationService {
 	return &RecommendationService{
 		userRepo:    userRepo,
@@ -57,8 +88,8 @@ func (s *RecommendationService) GetRecommendations(
 
 	// --- Cache check ---
 	cacheCtx, cacheCancel := context.WithTimeout(baseCtx, redisTimeout)
+	defer cacheCancel()
 	cached, _ := s.cache.Get(cacheCtx, userID, limit)
-	cacheCancel()
 
 	if len(cached) > 0 {
 		return &domain.UserRecommendationResponse{
@@ -76,27 +107,27 @@ func (s *RecommendationService) GetRecommendations(
 
 	// 1. Validate user exists
 	userCtx, userCancel := context.WithTimeout(baseCtx, dbTimeout)
+	defer userCancel()
 	user, err := s.userRepo.GetUserByID(userCtx, userID)
-	userCancel()
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("user_not_found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserNotFound
 		}
 		return nil, fmt.Errorf("db_error: %w", err)
 	}
 
 	// 2. Get watch history (for genre preference weights)
 	histCtx, histCancel := context.WithTimeout(baseCtx, dbTimeout)
+	defer histCancel()
 	watchHistory, err := s.contentRepo.GetWatchHistory(histCtx, userID)
-	histCancel()
 	if err != nil {
 		return nil, fmt.Errorf("db_error: %w", err)
 	}
 
 	// 3. Get candidate content (excludes watched, ordered by popularity)
 	candCtx, candCancel := context.WithTimeout(baseCtx, dbTimeout)
+	defer candCancel()
 	candidates, err := s.contentRepo.GetCandidateContent(candCtx, userID, 100)
-	candCancel()
 	if err != nil {
 		return nil, fmt.Errorf("db_error: %w", err)
 	}
@@ -104,8 +135,8 @@ func (s *RecommendationService) GetRecommendations(
 	// 4. Score candidates using model (mutates candidates[i].Score)
 	scoredCandidates, err := s.scorer.Score(candidates, watchHistory)
 	if err != nil {
-		if err == model.ErrModelUnavailable {
-			return nil, fmt.Errorf("model_unavailable")
+		if errors.Is(err, model.ErrModelUnavailable) {
+			return nil, ErrModelUnavailable
 		}
 		return nil, fmt.Errorf("model_error: %w", err)
 	}
@@ -128,10 +159,12 @@ func (s *RecommendationService) GetRecommendations(
 		}
 	}
 
-	// 6. Cache the result
+	// 6. Cache the result (best-effort — a miss is not fatal)
 	setCtx, setCancel := context.WithTimeout(baseCtx, redisTimeout)
-	_ = s.cache.Set(setCtx, userID, limit, recommendations)
-	setCancel()
+	defer setCancel()
+	if err := s.cache.Set(setCtx, userID, limit, recommendations); err != nil {
+		log.Printf("cache set failed for user %d: %v", userID, err)
+	}
 
 	_ = user // available for subscription/geo filtering extensions
 
@@ -157,8 +190,8 @@ func (s *RecommendationService) BatchRecommendations(
 
 	// 1. Paginated user IDs
 	pageCtx, pageCancel := context.WithTimeout(baseCtx, dbTimeout)
+	defer pageCancel()
 	userIDs, totalCount, err := s.userRepo.GetUsersPaginated(pageCtx, page, limit)
-	pageCancel()
 	if err != nil {
 		return nil, fmt.Errorf("db_error: %w", err)
 	}
@@ -180,24 +213,24 @@ func (s *RecommendationService) BatchRecommendations(
 
 	// 2. Bulk prefetch users (1 query for all users in this page)
 	usersCtx, usersCancel := context.WithTimeout(baseCtx, dbTimeout)
+	defer usersCancel()
 	users, err := s.userRepo.GetUsersByIDs(usersCtx, userIDs)
-	usersCancel()
 	if err != nil {
 		return nil, fmt.Errorf("db_error: %w", err)
 	}
 
 	// 3. Bulk prefetch watch histories (1 query for all users in this page)
 	histCtx, histCancel := context.WithTimeout(baseCtx, dbTimeout)
+	defer histCancel()
 	watchHistories, err := s.contentRepo.GetWatchHistoryBulk(histCtx, userIDs)
-	histCancel()
 	if err != nil {
 		return nil, fmt.Errorf("db_error: %w", err)
 	}
 
 	// 4. Fetch shared content pool (1 query — workers filter watched content in-memory)
 	contentCtx, contentCancel := context.WithTimeout(baseCtx, dbTimeout)
+	defer contentCancel()
 	allContent, err := s.contentRepo.GetAllContent(contentCtx, 500)
-	contentCancel()
 	if err != nil {
 		return nil, fmt.Errorf("db_error: %w", err)
 	}
@@ -281,7 +314,7 @@ func (s *RecommendationService) batchWorker(
 		workerCtx, cancel := context.WithTimeout(ctx, batchPerUserTimeout)
 
 		// --- Cache check ---
-		recs, _ := s.cache.Get(workerCtx, userID, 10)
+		recs, _ := s.cache.Get(workerCtx, userID, batchDefaultLimit)
 		if len(recs) > 0 {
 			results <- &domain.BatchResult{
 				UserID:          userID,
@@ -335,8 +368,8 @@ func (s *RecommendationService) batchWorker(
 			continue
 		}
 
-		// Take top 10
-		topN := 10
+		// Take top batchDefaultLimit
+		topN := batchDefaultLimit
 		if len(scoredCandidates) < topN {
 			topN = len(scoredCandidates)
 		}
@@ -353,8 +386,13 @@ func (s *RecommendationService) batchWorker(
 			}
 		}
 
-		// Cache result (use background context — worker ctx may be near timeout)
-		_ = s.cache.Set(context.Background(), userID, 10, recommendations)
+		// Cache result (best-effort: use a fresh short-lived context — workerCtx
+		// may be near timeout and caching is non-critical)
+		cacheCtx, cacheCancel := context.WithTimeout(context.Background(), time.Second)
+		if err := s.cache.Set(cacheCtx, userID, batchDefaultLimit, recommendations); err != nil {
+			log.Printf("cache set failed for batch user %d: %v", userID, err)
+		}
+		cacheCancel()
 
 		results <- &domain.BatchResult{
 			UserID:          userID,
